@@ -1,0 +1,8 @@
+title: Local models + Pi vs. Claude Code
+description: >-
+  Can a fully local coding agent finish a real Spring Boot 2.7->4.0 migration?
+  Three local models compared, independently verified, against a human/Claude-Code oracle.
+theme: jekyll-theme-cayman
+markdown: kramdown
+kramdown:
+  input: GFM

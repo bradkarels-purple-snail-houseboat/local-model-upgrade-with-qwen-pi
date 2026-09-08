@@ -1,0 +1,18 @@
+<!--
+  Routes Maven's own dependency downloads through the sandbox's allowlisting
+  gateway. Maven does NOT honor the http_proxy/https_proxy env vars that
+  curl/npm/most tools respect — without this explicit <proxies> block,
+  `mvn compile`/`mvn test` inside the locked-down sandbox network would just
+  fail to resolve any dependency, since the container has no other route out.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
+  <proxies>
+    <proxy>
+      <id>sandbox-egress</id>
+      <active>true</active>
+      <protocol>http</protocol>
+      <host>sandbox-gateway</host>
+      <port>3128</port>
+    </proxy>
+  </proxies>
+</settings>

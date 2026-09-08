@@ -26,6 +26,7 @@ its self-report.
 - [Results](#results)
 - [The false-positive lesson](#the-false-positive-lesson)
 - [qwen3.6 vs. the human/Claude-Code oracle](#qwen36-vs-the-humanclaude-code-oracle)
+- [Harness matters too: same model, different harness, worse result](#harness-matters-too-same-model-different-harness-worse-result)
 - [Takeaways](#takeaways)
 - [Reproducing this](#reproducing-this)
 
@@ -178,6 +179,9 @@ spots, it fixed one and not the other — then wrote a closing summary calling t
 compatibility" limitation, effectively redefining the goal down to "the main codebase compiles" and reporting that as
 success. Verified against the real build: still test-compile-broken both times.
 
+(This is under the Pi harness. The same model did measurably worse under a different harness — see
+[Harness matters too](#harness-matters-too-same-model-different-harness-worse-result) below.)
+
 ### Devstral — disqualified on usability, not correctness
 
 Devstral kept dropping into long pauses inside the Pi harness that read as stuck or hung, and only resumed once
@@ -247,6 +251,45 @@ codebase constructs this particular class via its builder outside of deserializa
 the first unhinted attempt, with these two narrower (untested, latent) null-safety gaps as the concrete, findable
 difference in fix quality.
 
+## Harness matters too: same model, different harness, worse result
+
+The comparison above holds the harness (Pi) constant and varies the model. As a follow-up, we ran the identical
+prompt and checkpoint through a different harness — [Qwen Code](https://github.com/QwenLM/qwen-code) — against the
+same `qwen3-coder:30b-a3b-q4_K_M` model that failed twice under Pi. Same starting commit, same prompt, independent
+verification — only the harness changed.
+
+**Result: worse, not just different.** Under Pi, Qwen3-Coder at least reached a compiling main codebase before
+getting stuck on test-compile errors. Under Qwen Code, it never got that far. It made one change — adding an
+explicit `<mainClass>` to the `spring-boot-maven-plugin` config, addressing a "No main class specified" packaging
+error — declared that "the core issue," and stopped:
+
+> "I have fixed the core issue and cannot achieve the full `mvn compile` goal..."
+
+Cited reasons included an inability to resolve dependency-compatibility issues, and, notably:
+
+> "this is taking too much time already"
+
+Told explicitly to keep iterating, it did not resume — the harness/model pairing never got back on track, even to
+reach a clean compile.
+
+**Verified independently:** the branch left behind (`upgrade-with-qwen-code-harness`, forked from the same
+`46f31af` checkpoint every other trial uses) has no commit beyond that checkpoint — just the one uncommitted
+`pom.xml` edit above. `mvn compile` against that exact working tree fails on the same class of Spring Boot 4
+breaking-API removals every other trial had to solve:
+
+```
+[ERROR] package org.apache.tomcat.util.codec.binary does not exist
+[ERROR] package org.springframework.boot.actuate.trace.http does not exist
+[ERROR] cannot find symbol: class WebSecurityConfigurerAdapter
+```
+
+None of that was touched.
+
+**Takeaway:** the same `qwen3-coder` weights got measurably further under Pi than under Qwen Code, on the identical
+prompt and starting point. One data point, not a trend — but it sharpens
+[the Devstral finding](#devstral--disqualified-on-usability-not-correctness): which agent harness you point a
+model through is not a neutral choice.
+
 ## Takeaways
 
 - **A model's self-report is not evidence.** Every trial in this comparison that "succeeded" per the model's own summary
@@ -254,7 +297,9 @@ was independently re-verified by running the actual build against the actual com
 self-reports was flatly wrong. Build the verification step into your process, not just your prompt.
 - **Harness fit is its own axis, separate from raw model capability.** A model that needs constant manual nudging to
 continue isn't viable for an unattended loop regardless of what it might be capable of with different tooling around it.
-This alone was enough to disqualify one of three models before it ever reached a checkpoint.
+This alone was enough to disqualify one of three models before it ever reached a checkpoint. The same axis cuts the
+other way too: the identical `qwen3-coder` model reached a compiling build under Pi but never did under Qwen Code on
+the same prompt and checkpoint — see [Harness matters too](#harness-matters-too-same-model-different-harness-worse-result).
 - **An ambiguous success criterion gets satisfied the cheapest way that reads as true.** "Iterate to green" was read as
 "compiles." Spell out every distinct check explicitly, and demand the model paste real tool output as proof rather than
 a prose summary.

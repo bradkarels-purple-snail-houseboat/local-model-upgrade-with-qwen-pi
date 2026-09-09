@@ -26,7 +26,7 @@ its self-report.
 - [Results](#results)
 - [The false-positive lesson](#the-false-positive-lesson)
 - [qwen3.6 vs. the human/Claude-Code oracle](#qwen36-vs-the-humanclaude-code-oracle)
-- [Harness matters too: same model, different harness, worse result](#harness-matters-too-same-model-different-harness-worse-result)
+- [Harness matters too: same model, different harness](#harness-matters-too-same-model-different-harness)
 - [Takeaways](#takeaways)
 - [Reproducing this](#reproducing-this)
 
@@ -180,7 +180,7 @@ compatibility" limitation, effectively redefining the goal down to "the main cod
 success. Verified against the real build: still test-compile-broken both times.
 
 (This is under the Pi harness. The same model did measurably worse under a different harness — see
-[Harness matters too](#harness-matters-too-same-model-different-harness-worse-result) below.)
+[Harness matters too](#harness-matters-too-same-model-different-harness) below.)
 
 ### Devstral — disqualified on usability, not correctness
 
@@ -251,12 +251,16 @@ codebase constructs this particular class via its builder outside of deserializa
 the first unhinted attempt, with these two narrower (untested, latent) null-safety gaps as the concrete, findable
 difference in fix quality.
 
-## Harness matters too: same model, different harness, worse result
+## Harness matters too: same model, different harness
 
-The comparison above holds the harness (Pi) constant and varies the model. As a follow-up, we ran the identical
-prompt and checkpoint through a different harness — [Qwen Code](https://github.com/QwenLM/qwen-code) — against the
-same `qwen3-coder:30b-a3b-q4_K_M` model that failed twice under Pi. Same starting commit, same prompt, independent
-verification — only the harness changed.
+The comparison above holds the harness (Pi) constant and varies the model. Two follow-up trials instead held the
+**model** constant and varied the harness — same checkpoint, same prompt, independent verification, only the
+harness changed.
+
+### Qwen Code + qwen3-coder — worse than Pi
+
+Ran the identical prompt and checkpoint through a different harness — [Qwen Code](https://github.com/QwenLM/qwen-code)
+— against the same `qwen3-coder:30b-a3b-q4_K_M` model that failed twice under Pi.
 
 **Result: worse, not just different.** Under Pi, Qwen3-Coder at least reached a compiling main codebase before
 getting stuck on test-compile errors. Under Qwen Code, it never got that far. It made one change — adding an
@@ -290,6 +294,53 @@ prompt and starting point. One data point, not a trend — but it sharpens
 [the Devstral finding](#devstral--disqualified-on-usability-not-correctness): which agent harness you point a
 model through is not a neutral choice.
 
+### Nanocoder + qwen3.6 — the winning model fails under a different harness
+
+The sharper test: qwen3.6 is the one model in this entire comparison that succeeded cleanly under Pi. Same model,
+same checkpoint, same prompt, run instead through [Nanocoder](https://github.com/Nano-Collective/nanocoder).
+Result: failed — and two rounds of targeted hints made the final state *worse*, not better.
+
+**Unhinted attempt.** Reported the task complete. Independently verified: `mvn compile` succeeds, and `mvn test`
+(Surefire only) passes 16/16 — but that's a subset, not the full suite. The prompt's actual bar, `mvn verify`
+(Surefire + Failsafe, the same 42-test total every other trial hits), is **`BUILD FAILURE`**: 17 errors, all
+cascading from two root causes:
+
+1. **GreenMail 2.x mailbox collision.** `pom.xml` bumps the `greenmail` dependency to 2.x — the version the
+   migration requires — but `EmailConfig.java`, the file that needed a matching runtime fix, was never touched.
+   GreenMail 2.x throws `Mailbox ... already exists` when the same mailbox name gets reused across Spring test
+   contexts; bumping the dependency version alone doesn't fix that.
+2. **An unresolved Maven filtering placeholder.** `@spring-profiles-active@` is never substituted, breaking
+   `spring.profiles.active` binding — a gap the oracle's own fix list explicitly required ("resource filtering")
+   that this trial's `pom.xml` never added.
+
+No commit existed at any point — the same failure-to-checkpoint pattern as every other unsuccessful trial here.
+(One note on the raw diff: `git diff --stat` showed 58 files touched, but that's almost entirely CRLF→LF
+line-ending churn with zero content change. The real diff, once that noise is filtered out, is 6 files, +35/−51 —
+actually more surgical than either the oracle's or qwen3.6's own diff under Pi.)
+
+**First hint** (naming both gaps explicitly — the same disclosure standard used for Qwen3-Coder's hint under Pi):
+resource filtering got fixed, correctly and more minimally than expected — it just defines the missing property
+rather than adding a filtering block, since `spring-boot-starter-parent` already enables `@...@` filtering by
+default. GreenMail was untouched. The line-ending noise was untouched. No commit, no proof pasted, no statement of
+done or not-done — it simply stopped. `mvn verify` errors: 17 → 15.
+
+**Second hint** (GreenMail only, pointing at the missing bean-lifecycle cleanup without naming the fix): stalled
+mid-session on a model/inference error, resumed after a manual retry, then stopped silently again despite being
+told explicitly not to. What it left behind: a real attempt at `EmailConfig.java` (removed the `user.create()`
+call implicated in the collision — left unverified, since compilation broke before `mvn verify` could run again),
+and, unprompted, a **correct and legitimate** migration of `SecurityConfig` off the removed
+`WebSecurityConfigurerAdapter` API to the modern `SecurityFilterChain` bean — matching migration work every other
+trial also had to do. It also added an "offline JwtDecoder" for tests referencing two classes that don't exist
+anywhere in Spring Security or Nimbus JOSE JWT (`NimbusJwtDecoderUtils`, `ImmutableJwkSetSource`) — hallucinated
+API surface. **Final state: the codebase does not compile at all** — a regression from the post-first-hint state,
+which at least compiled. Still zero commits, across all three sessions.
+
+**Bottom line:** the one model that succeeded cleanly on its first unhinted attempt under Pi failed under
+Nanocoder, and two rounds of targeted hints left it *worse off*, not better — real progress (a correct, unprompted
+Spring Security migration) shipped in the same breath as a hallucinated fix that broke the build, and nothing was
+ever checkpointed to preserve the real progress separately. Not eligible for an oracle comparison: there's no
+test-verified-passing result to compare against one.
+
 ## Takeaways
 
 - **A model's self-report is not evidence.** Every trial in this comparison that "succeeded" per the model's own summary
@@ -297,9 +348,16 @@ was independently re-verified by running the actual build against the actual com
 self-reports was flatly wrong. Build the verification step into your process, not just your prompt.
 - **Harness fit is its own axis, separate from raw model capability.** A model that needs constant manual nudging to
 continue isn't viable for an unattended loop regardless of what it might be capable of with different tooling around it.
-This alone was enough to disqualify one of three models before it ever reached a checkpoint. The same axis cuts the
-other way too: the identical `qwen3-coder` model reached a compiling build under Pi but never did under Qwen Code on
-the same prompt and checkpoint — see [Harness matters too](#harness-matters-too-same-model-different-harness-worse-result).
+This alone was enough to disqualify one of three models before it ever reached a checkpoint. Two follow-up trials
+sharpen the point further: `qwen3-coder` reached a compiling build under Pi but never did under Qwen Code, and —
+more tellingly — `qwen3.6`, the one model that succeeded outright under Pi, failed under Nanocoder on the identical
+prompt and checkpoint. See [Harness matters too](#harness-matters-too-same-model-different-harness).
+- **Iterating without re-verifying compounds risk — it doesn't just fail to help.** Two targeted hints at
+Nanocoder's remaining gaps ended with a *worse* codebase than before either hint: real, correct, unprompted
+migration work shipped in the same breath as a hallucinated fix (two nonexistent Spring Security/Nimbus classes)
+that broke compilation, and it went uncaught because the model never re-ran the build before stopping. A hint is
+not a guarantee of forward progress — independent verification has to happen after every iteration, not just at
+the claimed end.
 - **An ambiguous success criterion gets satisfied the cheapest way that reads as true.** "Iterate to green" was read as
 "compiles." Spell out every distinct check explicitly, and demand the model paste real tool output as proof rather than
 a prose summary.
